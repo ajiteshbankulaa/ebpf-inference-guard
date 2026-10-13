@@ -28,14 +28,29 @@ type shieldCounters struct {
 	RingbufLost uint64
 }
 
+type shieldFlowEvent struct {
+	_        structs.HostLayout
+	TsNs     uint64
+	SrcIp    uint32
+	DstIp    uint32
+	PktLen   uint32
+	SrcPort  uint16
+	DstPort  uint16
+	Ifindex  uint32
+	Protocol uint8
+	TcpFlags uint8
+	Reserved uint16
+}
+
 // Names of all BPF objects in the ELF.
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	shieldMapBlocklist  = "blocklist"
-	shieldMapEvents     = "events"
-	shieldMapStats      = "stats"
-	shieldProgXdpShield = "xdp_shield"
+	shieldMapBlocklist       = "blocklist"
+	shieldMapEvents          = "events"
+	shieldMapStats           = "stats"
+	shieldProgXdpShield      = "xdp_shield"
+	shieldVarUnusedFlowEvent = "unused_flow_event"
 )
 
 // loadShield returns the embedded CollectionSpec for shield.
@@ -96,6 +111,7 @@ type shieldMapSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type shieldVariableSpecs struct {
+	UnusedFlowEvent *ebpf.VariableSpec `ebpf:"unused_flow_event"`
 }
 
 // shieldObjects contains all objects after they have been loaded into the kernel.
@@ -135,6 +151,7 @@ func (m *shieldMaps) Close() error {
 //
 // It can be passed to loadShieldObjects or ebpf.CollectionSpec.LoadAndAssign.
 type shieldVariables struct {
+	UnusedFlowEvent *ebpf.Variable `ebpf:"unused_flow_event"`
 }
 
 // shieldPrograms contains all programs after they have been loaded into the kernel.

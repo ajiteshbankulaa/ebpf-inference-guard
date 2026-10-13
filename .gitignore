@@ -1,2 +1,8 @@
 *.o
 /bin/
+/.venv/
+/logs/
+/shield
+__pycache__/
+*.py[cod]
+.DS_Store
