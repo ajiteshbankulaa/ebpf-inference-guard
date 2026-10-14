@@ -5,11 +5,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -115,7 +118,7 @@ func removeBlock(
 }
 
 // Read and sum the per-CPU kernel counters.
-func printStats(m *ebpf.Map) {
+func printStats(m *ebpf.Map, blocklist *ebpf.Map) {
 	var perCPU []counterValue
 
 	if err := m.Lookup(
@@ -135,6 +138,10 @@ func printStats(m *ebpf.Map) {
 		total.Malformed += c.Malformed
 		total.RingbufLost += c.RingbufLost
 	}
+	runtimeMetrics.observeKernelCounters(total)
+	if runtimeMetrics.shouldRefreshBlockGauge(time.Now()) {
+		runtimeMetrics.activeBlocks.Set(float64(countActiveBlocks(blocklist)))
+	}
 
 	log.Printf(
 		"[STATS] pass=%d drop=%d malformed=%d ringbuf_lost=%d",
@@ -143,6 +150,77 @@ func printStats(m *ebpf.Map) {
 		total.Malformed,
 		total.RingbufLost,
 	)
+}
+
+func countActiveBlocks(m *ebpf.Map) int {
+	var now unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &now); err != nil {
+		return 0
+	}
+	nowNS := uint64(now.Sec)*1_000_000_000 + uint64(now.Nsec)
+	var key [4]byte
+	var entry blockEntry
+	active := 0
+	iter := m.Iterate()
+	for iter.Next(&key, &entry) {
+		if entry.ExpiresNS == 0 || nowNS < entry.ExpiresNS {
+			active++
+		}
+	}
+	if err := iter.Err(); err != nil {
+		log.Printf("[ERROR] blocklist iteration: %v", err)
+	}
+	return active
+}
+
+// defaultRouteInterface returns the interface used by the lowest-metric IPv4
+// default route. An explicit -iface value remains available for lab setups.
+func defaultRouteInterface() (*net.Interface, error) {
+	f, err := os.Open("/proc/net/route")
+	if err != nil {
+		return nil, fmt.Errorf("read IPv4 routes: %w", err)
+	}
+	defer f.Close()
+
+	name, err := parseDefaultRouteName(f)
+	if err != nil {
+		return nil, err
+	}
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, fmt.Errorf("resolve default-route interface %q: %w", name, err)
+	}
+	return iface, nil
+}
+
+func parseDefaultRouteName(r io.Reader) (string, error) {
+	scanner := bufio.NewScanner(r)
+	if !scanner.Scan() { // header
+		return "", fmt.Errorf("IPv4 route table is empty")
+	}
+	bestMetric := ^uint64(0)
+	bestName := ""
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 8 || fields[1] != "00000000" {
+			continue
+		}
+		flags, flagErr := strconv.ParseUint(fields[3], 16, 64)
+		metric, metricErr := strconv.ParseUint(fields[6], 10, 64)
+		if flagErr != nil || metricErr != nil || flags&1 == 0 {
+			continue
+		}
+		if metric < bestMetric {
+			bestMetric, bestName = metric, fields[0]
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan IPv4 routes: %w", err)
+	}
+	if bestName == "" {
+		return "", fmt.Errorf("no IPv4 default route found")
+	}
+	return bestName, nil
 }
 
 // Keep our Day 1 interactive CLI.
@@ -247,8 +325,8 @@ func main() {
 
 	ifaceName := flag.String(
 		"iface",
-		"veth-v",
-		"Network interface to protect",
+		"",
+		"Network interface to protect (default: IPv4 default route)",
 	)
 
 	mode := flag.String(
@@ -311,6 +389,11 @@ func main() {
 		"run-id",
 		"",
 		"CSV experiment identifier",
+	)
+
+	metricsAddr := flag.String(
+		"metrics-addr", "127.0.0.1:9100",
+		"Address for the Prometheus endpoint at /shield/metrics (empty disables it)",
 	)
 
 	flag.Parse()
@@ -390,13 +473,15 @@ func main() {
 
 	// -------- Find the network interface --------
 
-	iface, err := net.InterfaceByName(*ifaceName)
-
+	var iface *net.Interface
+	var err error
+	if *ifaceName == "" {
+		iface, err = defaultRouteInterface()
+	} else {
+		iface, err = net.InterfaceByName(*ifaceName)
+	}
 	if err != nil {
-		log.Fatalf(
-			"Find interface %q: %v",
-			*ifaceName, err,
-		)
+		log.Fatalf("Select interface: %v", err)
 	}
 
 	// -------- Select the XDP attachment mode --------
@@ -428,10 +513,26 @@ func main() {
 
 	if err != nil {
 		log.Fatalf(
-			"Attach XDP: %v", err,
+			"Attach XDP to %s (ifindex=%d, mode=%s): %v",
+			iface.Name, iface.Index, *mode, err,
 		)
 	}
 	defer xdpLink.Close()
+
+	var metricsServer *http.Server
+	if *metricsAddr != "" {
+		mux := http.NewServeMux()
+		mux.Handle("/shield/metrics", runtimeMetrics.handler())
+		metricsServer = &http.Server{
+			Addr: *metricsAddr, Handler: mux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+		go func() {
+			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("metrics server: %v", err)
+			}
+		}()
+	}
 
 	// -------- Open kernel ring-buffer reader --------
 
@@ -457,7 +558,7 @@ func main() {
 
 	log.Printf(
 		"Shield attached: iface=%s xdp_mode=%s detector=%s",
-		*ifaceName,
+		iface.Name,
 		*mode,
 		*detector,
 	)
@@ -479,7 +580,7 @@ func main() {
 				return
 
 			case <-ticker.C:
-				printStats(objs.Stats)
+				printStats(objs.Stats, objs.Blocklist)
 			}
 		}
 	}()
@@ -505,6 +606,11 @@ func main() {
 	// Stop event reading and wait for workers.
 	_ = reader.Close()
 	wg.Wait()
+	if metricsServer != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = metricsServer.Shutdown(shutdownCtx)
+		cancel()
+	}
 
 	log.Println(
 		"Shield stopping; XDP link will be detached",

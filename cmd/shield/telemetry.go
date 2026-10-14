@@ -168,10 +168,12 @@ func readSamples(
 		}
 
 		// Don't block forever if our aggregator is slow.
+		runtimeMetrics.ringbufEvents.Inc()
 		select {
 		case out <- ev:
 		default:
 			lost.Add(1)
+			runtimeMetrics.userEventLoss.Inc()
 		}
 	}
 }
@@ -349,12 +351,14 @@ func runMonitor(
 				if !malicious {
 					continue
 				}
+				runtimeMetrics.anomalyDecisions.Inc()
 
 				// Don't repeatedly replace the same block.
 				if now.Before(blockCooldown[src]) {
 					continue
 				}
 
+				decisionAt := time.Now()
 				err := addBlockWithReason(
 					blocklist,
 					src.String(),
@@ -365,6 +369,7 @@ func runMonitor(
 					log.Printf("auto-block failed: %v", err)
 					continue
 				}
+				runtimeMetrics.detectionToBlock.Observe(time.Since(decisionAt).Seconds())
 
 				blockCooldown[src] = now.Add(cfg.AutoTTL)
 

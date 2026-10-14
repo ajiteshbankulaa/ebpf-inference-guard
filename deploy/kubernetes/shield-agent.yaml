@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: shield-agent
+  namespace: shield-system
+spec:
+  selector:
+    matchLabels:
+      app: shield-agent
+  template:
+    metadata:
+      labels:
+        app: shield-agent
+    spec:
+      hostNetwork: true
+      automountServiceAccountToken: false
+      nodeSelector:
+        shield.example.com/eligible: "true"
+      containers:
+        - name: shield
+          image: 296062591117.dkr.ecr.us-east-1.amazonaws.com/ebpf-shield:build-day4-20261014-2348z
+          imagePullPolicy: IfNotPresent
+          args: ["-iface", "enp39s0", "-mode", "generic", "-detector", "off", "-metrics-addr", "0.0.0.0:9100"]
+          ports:
+            - name: metrics
+              containerPort: 9100
+              protocol: TCP
+          securityContext:
+            privileged: true
+            runAsUser: 0
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi

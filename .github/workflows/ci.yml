@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install eBPF build dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang llvm gcc libbpf-dev libelf-dev linux-libc-dev pkg-config
+      - run: go generate ./cmd/shield
+      - run: go test ./...
+      - run: go vet ./...
+      - run: go build -trimpath ./cmd/shield
+      - run: go build -trimpath ./cmd/gateway
+      - name: Build and smoke test container
+        run: |
+          docker build -t ebpf-shield:ci .
+          docker run --rm ebpf-shield:ci -h
+          docker run --rm --entrypoint /usr/local/bin/gateway ebpf-shield:ci -h
+
+  terraform:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.6
+      - run: terraform fmt -check -recursive
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML
+      - run: python -m unittest discover -s scripts/benchmark
+      - name: Parse Kubernetes manifests
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+
+          files = sorted(Path("deploy/kubernetes").glob("*.yaml"))
+          assert files, "no Kubernetes manifests found"
+          for path in files:
+              docs = list(yaml.safe_load_all(path.read_text()))
+              assert docs and all(isinstance(doc, dict) for doc in docs), path
+              for doc in docs:
+                  assert doc.get("apiVersion") and doc.get("kind"), path
+                  assert doc.get("metadata", {}).get("name"), path
+              print(f"validated YAML structure: {path}")
+          PY
