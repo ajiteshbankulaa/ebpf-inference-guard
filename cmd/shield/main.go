@@ -512,9 +512,13 @@ func main() {
 	)
 
 	if err != nil {
+		hint := "check the worker kernel log for attachment details"
+		if *mode == "driver" {
+			hint += "; ENA native XDP may reject jumbo MTU"
+		}
 		log.Fatalf(
-			"Attach XDP to %s (ifindex=%d, mode=%s): %v",
-			iface.Name, iface.Index, *mode, err,
+			"Attach XDP to %s (ifindex=%d, mode=%s, MTU=%d): %v; %s",
+			iface.Name, iface.Index, *mode, iface.MTU, err, hint,
 		)
 	}
 	defer xdpLink.Close()
