@@ -223,7 +223,7 @@ func parseDefaultRouteName(r io.Reader) (string, error) {
 	return bestName, nil
 }
 
-// Keep our Day 1 interactive CLI.
+// Accept manual blocklist commands from standard input.
 func interactive(
 	blocklist *ebpf.Map,
 	stop context.CancelFunc,
@@ -321,7 +321,7 @@ func interactive(
 }
 
 func main() {
-	// -------- Day 1 startup flags --------
+	// Interface and initial block settings.
 
 	ifaceName := flag.String(
 		"iface",
@@ -347,7 +347,7 @@ func main() {
 		"Initial block duration (0 = permanent)",
 	)
 
-	// -------- New Day 2 flags --------
+	// Optional traffic detection and training-data collection.
 
 	detector := flag.String(
 		"detector",
@@ -548,7 +548,7 @@ func main() {
 		)
 	}
 
-	// -------- Build the Day 2 monitor config --------
+	// Configure traffic aggregation and detection.
 
 	cfg := monitorConfig{
 		Mode:         *detector,
