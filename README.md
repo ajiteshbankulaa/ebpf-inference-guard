@@ -6,7 +6,7 @@ An experimental Linux traffic guard built with XDP/eBPF and Go. The kernel progr
 
 ## Engineering scope
 
-This repository brings together Linux kernel programming in C, a Go eBPF controller, Kubernetes deployment, Terraform-managed AWS infrastructure, offline model training, and an L7 request admission example. The AWS exercise uses an existing EKS worker and NLB; local development uses disposable network namespaces. It is a compact systems project for discussing dataplane boundaries, deployment safety, telemetry, and reproducible validation.
+This repository brings together Linux kernel programming in C, a Go eBPF controller, Kubernetes deployment, Terraform-managed AWS infrastructure, offline model training, and an L7 request admission example. The recorded AWS exercise used an EKS worker and NLB; local development uses disposable network namespaces. The AWS stack was torn down after validation. It is a compact systems project for discussing dataplane boundaries, deployment safety, telemetry, and reproducible validation.
 
 ## How it works
 
@@ -291,7 +291,7 @@ scripts/benchmark/                Measurement protocol and CSV summarizer
 
 ## AWS EKS deployment and verified results
 
-The existing `ebpf-shield` cluster in `us-east-1` runs the nginx test service behind an internet-facing NLB and the Shield agent as a privileged, node-selectable DaemonSet. The gateway and both metrics services are ClusterIP-only. Keep the agent detector set to `off` for cloud observation. The node label `shield.example.com/eligible=true` selects the worker; remove it to stop the DaemonSet on that node.
+The `ebpf-shield` cluster in `us-east-1` ran the nginx test service behind an internet-facing NLB and the Shield agent as a privileged, node-selectable DaemonSet. The gateway and both metrics services were ClusterIP-only. Keep the agent detector set to `off` for a new cloud observation run. The node label `shield.example.com/eligible=true` selects the worker; remove it to stop the DaemonSet on that node.
 
 On 2026-10-14, the EKS worker (`ip-10-0-2-119`, Amazon Linux 2023, kernel 6.18.51, ENA 2.17.2g) rejected the agent's `mode=driver` BPF-link request with `BPF_LINK_CREATE: invalid argument`. A later read-only check of the worker's kernel log found the reason: `Failed to set xdp program, the current MTU (9001) is larger than the maximum allowed MTU (3502) while xdp is on`. The XDP program loaded; the rejection came from ENA during native attachment. `bpftool net show` showed no pre-existing XDP program at the time of the original attempt. This is a jumbo-MTU constraint for the tested program and driver setup, not proof that ENA lacks native XDP or that BPF links are inherently incompatible. Amazon's [ENA driver documentation](https://github.com/amzn/amzn-drivers/blob/master/kernel/linux/ena/README.rst) describes the single-buffer MTU limit and the `BPF_F_XDP_HAS_FRAGS` option for multi-buffer XDP. Neither reducing the EKS interface MTU nor enabling multi-buffer support was tested here; both need a separate controlled validation before claiming native protection. Changing the worker MTU could affect Kubernetes traffic and is not part of this deployment.
 
@@ -334,7 +334,7 @@ docker run --rm "$IMAGE" -h
 docker push "$IMAGE"
 ```
 
-Update both the shield and gateway image fields to the pushed reference before applying their manifests. Replace the reserved test CIDR `192.0.2.0/24` in `echo.yaml` with the trusted client range before using that manifest. The currently running NLB is restricted to `129.161.212.42/32`; retain a narrow source range.
+Update both the shield and gateway image fields to the pushed reference before applying their manifests. Replace the reserved test CIDR `192.0.2.0/24` in `echo.yaml` with the trusted client range before using that manifest. The test NLB was restricted to `129.161.212.42/32`; retain a narrow source range in a new deployment.
 
 ### Benchmark status
 
@@ -345,6 +345,8 @@ The repository also includes a repeatable direct private-VPC protocol and CSV su
 The verified cloud datapath uses generic XDP. Native ENA attachment is blocked by the worker's 9001-byte MTU with this single-buffer program; there is no claim of native-XDP protection. A future native test should use a disposable ENA interface with an approved lower MTU or a separately verified multi-buffer program, then measure the real NIC path. Do not replace an attachment the process does not own.
 
 Terraform state and variables are local operational files and are ignored by Git. Preserve the state while its AWS resources exist. AWS resources including EKS, EC2, NAT gateways, ECR storage, and the NLB can incur charges. When finished, inspect the Terraform plan using the matching state, then destroy only resources represented by that reviewed plan. Removing a Kubernetes LoadBalancer Service deletes its managed NLB.
+
+**Teardown recorded October 14, 2026 (US Eastern):** the `echo-nlb` Service was deleted first, then a reviewed Terraform destroy removed 63 resources. Follow-up checks found no EKS cluster, EC2 instance, EBS volume, NAT gateway, Elastic IP, load balancer, ECR repository, S3 bucket, or retained CloudWatch log group in this account. Terraform state is empty but kept locally for audit. The EKS KMS key is pending deletion on November 14; [AWS does not charge for customer-managed keys scheduled for deletion](https://aws.amazon.com/kms/pricing/). The old NLB URL and ECR image references above are records of the run, not live endpoints.
 
 ## References
 
