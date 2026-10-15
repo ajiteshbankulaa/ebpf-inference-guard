@@ -93,7 +93,7 @@ Show the command-line flags:
 ./bin/shield -h
 ```
 
-The GitHub Actions workflow runs BPF generation, Go tests, vet, builds both Go commands and the container, smoke-tests both CLIs, validates Terraform formatting/configuration, checks Kubernetes YAML structure, and tests the benchmark summarizer on pushes and pull requests.
+The GitHub Actions workflow regenerates and verifies the checked-in Go tree from the sample dataset, then runs Go tests, vet, builds both commands and the container, smoke-tests both CLIs, validates Terraform formatting/configuration, checks Kubernetes YAML structure, and tests the benchmark helpers on pushes and pull requests. The model check is a small reproducible train/evaluate/export step; it does not use a managed training service or claim production model quality.
 
 ## Run the guard
 
@@ -233,7 +233,7 @@ python ml/train.py \
   --min-samples 5
 ```
 
-The script splits by `run_id` (rather than randomly splitting adjacent windows), reports held-out metrics, and exports a shallow decision tree as ordinary Go conditionals. After training, rebuild the application:
+The script splits by `run_id` (rather than randomly splitting adjacent windows), reports held-out metrics, and exports a shallow decision tree as ordinary Go conditionals. CI reruns this flow against the checked-in sample windows and checks that the generated Go matches the committed artifact. This is a reproducibility check on a small lab dataset, not a production model-quality claim. After training, rebuild the application:
 
 ```sh
 gofmt -w cmd/shield/model_generated.go
@@ -338,7 +338,9 @@ Update both the shield and gateway image fields to the pushed reference before a
 
 ### Benchmark status
 
-No packet-throughput comparison is published. The repository includes a repeatable protocol and CSV summarizer under [`scripts/benchmark/`](scripts/benchmark/README.md), with five repetitions each for PASS, XDP DROP, nftables DROP, and XDP with telemetry. It specifies direct private-VPC traffic to avoid the NLB as a confounding path and requires packet counts, victim CPU, cycles, instructions, and ring-buffer loss. The separate traffic-generator EC2 instance required by that protocol was not provisioned, so PPS and CPU comparisons remain unmeasured. The bounded NLB run above is useful evidence for application reachability, latency under a small request load, and concurrent XDP observation; it is not a dataplane benchmark.
+The first packet-path comparison used a disposable veth pair on the existing EKS worker, with five 100,000-packet runs per case after a warm-up. Median measured ingress completion rates were 415,445 pps for unfiltered PASS, 1,163,581 pps for Shield generic-XDP drop, 489,237 pps for nftables drop, and 376,279 pps for Shield generic XDP with sampled telemetry; the telemetry case recorded 7,891 events and no ring-buffer loss. The [run notes](scripts/benchmark/worker-veth-2026-10-14.md) include the raw [CSV](scripts/benchmark/worker-veth-2026-10-14.csv), setup, and limits. This same-worker veth test is a small software-path comparison, not ENA throughput: the generator shared the worker CPU, and victim CPU/cycles were not measured. The separate direct-VPC protocol below remains unrun, so do not present these rates as cloud NIC performance.
+
+The repository also includes a repeatable direct private-VPC protocol and CSV summarizer under [`scripts/benchmark/`](scripts/benchmark/README.md), with five repetitions each for PASS, XDP DROP, nftables DROP, and XDP with telemetry. That experiment avoids the NLB path and measures packets, victim CPU, cycles, instructions, and ring-buffer loss. The dedicated traffic-generator EC2 instance was not provisioned. The bounded NLB request run above checks application reachability, latency under a small request load, and concurrent XDP observation; it is not a dataplane benchmark.
 
 The verified cloud datapath uses generic XDP. Native ENA attachment through the tested BPF-link driver mode remains unresolved; there is no claim of native-XDP protection. Native attachment via another mechanism must be tested separately without replacing any attachment that the process does not own.
 

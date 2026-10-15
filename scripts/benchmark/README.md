@@ -1,6 +1,12 @@
 # Dataplane benchmark protocol
 
-This benchmark compares the dataplane on a single EKS worker. It is separate from the NLB HTTP check. The NLB adds variables that make it unsuitable for measuring the packet hook itself.
+The NLB HTTP check is separate from packet-path measurements. The NLB adds variables that make it unsuitable for measuring the packet hook itself.
+
+## Recorded worker-local run
+
+[`worker-veth-2026-10-14.md`](worker-veth-2026-10-14.md) records a small four-case comparison on a disposable veth pair attached to the existing EKS worker. It ran five 100,000-packet repetitions per case after a warm-up. The raw rows are in [`worker-veth-2026-10-14.csv`](worker-veth-2026-10-14.csv). This exercises Shield's real generic-XDP program on the worker kernel, but the test generator and target shared that worker and the veth bypassed ENA. Treat it as a lab software-path result, not NIC throughput.
+
+`udp_burst.c` sends 64-byte Ethernet IPv4/UDP frames in batches. `veth_trial.py` times the sender through the expected packet count appearing in the receiving veth's RX counter. Build the sender with `gcc -O2 -Wall -Wextra -Werror`; both helpers need to run on the machine that owns `bench-host`. The one-off Kubernetes Pod used to attach Shield must use `-iface bench-host -mode generic -detector off` and a unique metrics port. Remove only the temporary Pod, nftables table, and namespace created for the run, then verify its XDP link is gone with `bpftool net show`.
 
 ## Topology and safety
 

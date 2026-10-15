@@ -17,6 +17,7 @@ tfplan
 *.tfstate.*
 *.log
 *.csv
+!scripts/benchmark/worker-veth-*.csv
 /data/
 .env*
 !.env.example
